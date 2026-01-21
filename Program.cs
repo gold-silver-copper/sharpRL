@@ -1,5 +1,4 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
@@ -199,7 +198,11 @@ class GameWorld
     private Tile[,] tiles;
     private List<Entity> entities;
     public Player Player { get; private set; }
-    public string LastMessage { get; set; }
+    
+    private List<string> messageBuffer;
+    private const int MaxMessages = 5;
+    
+    public IReadOnlyList<string> Messages => messageBuffer.AsReadOnly();
     
     public GameWorld(int width, int height)
     {
@@ -207,7 +210,9 @@ class GameWorld
         Height = height;
         tiles = new Tile[height, width];
         entities = new List<Entity>();
-        LastMessage = "Welcome to the dungeon!";
+        messageBuffer = new List<string>();
+        
+        AddMessage("Welcome to the dungeon!");
         
         InitializeWorld();
     }
@@ -219,7 +224,9 @@ class GameWorld
         WorldId = data.Id;
         tiles = new Tile[data.Height, data.Width];
         entities = new List<Entity>();
-        LastMessage = "Game loaded.";
+        messageBuffer = new List<string>();
+        
+        AddMessage("Game loaded.");
         
         foreach (var tile in data.Tiles)
         {
@@ -228,6 +235,19 @@ class GameWorld
         
         entities.AddRange(data.Entities);
         Player = entities.OfType<Player>().FirstOrDefault();
+    }
+    
+    public void AddMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return;
+            
+        messageBuffer.Insert(0, message);
+        
+        if (messageBuffer.Count > MaxMessages)
+        {
+            messageBuffer.RemoveAt(messageBuffer.Count - 1);
+        }
     }
     
     private void InitializeWorld()
@@ -252,7 +272,17 @@ class GameWorld
         AddDoor(20, 12);
         AddDoor(35, 9);
         
-        Player = new Player(8, 5);
+        // Add a cluster of doors for testing
+        AddDoor(15, 10);
+        AddDoor(16, 10);
+        AddDoor(17, 10);
+        AddDoor(15, 11);
+        AddDoor(17, 11);
+        AddDoor(15, 12);
+        AddDoor(16, 12);
+        AddDoor(17, 12);
+        
+        Player = new Player(16, 11);
         entities.Add(Player);
         
         entities.Add(new Enemy(25, 12, "Goblin"));
@@ -349,6 +379,23 @@ class GameWorld
         return !entities.Any(e => e.X == x && e.Y == y && e.BlocksMovement);
     }
     
+    public void ToggleDoorInDirection(int dx, int dy)
+    {
+        int checkX = Player.X + dx;
+        int checkY = Player.Y + dy;
+        
+        var door = GetEntitiesAt(checkX, checkY).OfType<Door>().FirstOrDefault();
+        if (door != null)
+        {
+            door.Toggle();
+            AddMessage(door.IsOpen ? "You open the door." : "You close the door.");
+        }
+        else
+        {
+            AddMessage("There is no door in that direction.");
+        }
+    }
+    
     public void MovePlayer(int dx, int dy)
     {
         int newX = Player.X + dx;
@@ -361,7 +408,7 @@ class GameWorld
         if (door != null && !door.IsOpen)
         {
             door.Toggle();
-            LastMessage = "You open the door.";
+            AddMessage("You open the door.");
             return;
         }
         
@@ -370,11 +417,11 @@ class GameWorld
         if (enemy != null)
         {
             enemy.Health -= 20;
-            LastMessage = $"You attack the {enemy.Name}! Dealt 20 damage.";
+            AddMessage($"You attack the {enemy.Name}! Dealt 20 damage.");
             if (enemy.Health <= 0)
             {
                 entities.Remove(enemy);
-                LastMessage += $" The {enemy.Name} is defeated!";
+                AddMessage($"The {enemy.Name} is defeated!");
                 Player.Experience += 10;
             }
             return;
@@ -391,21 +438,17 @@ class GameWorld
             if (item != null)
             {
                 entities.Remove(item);
-                LastMessage = $"You picked up {item.Name}.";
+                AddMessage($"You picked up {item.Name}.");
                 if (item.ItemType == "Potion")
                 {
                     Player.Health = Math.Min(Player.Health + item.Value, Player.MaxHealth);
-                    LastMessage += $" Restored {item.Value} health!";
+                    AddMessage($"Restored {item.Value} health!");
                 }
-            }
-            else
-            {
-                LastMessage = "";
             }
         }
         else
         {
-            LastMessage = "You cannot move there.";
+            AddMessage("You cannot move there.");
         }
     }
     
@@ -599,18 +642,25 @@ class RoguelikeRenderer
         string posInfo = $"Position: ({world.Player.X}, {world.Player.Y})";
         Console.WriteLine(healthBar + levelInfo + posInfo);
         
-        if (!string.IsNullOrEmpty(world.LastMessage))
+        Console.WriteLine(new string('-', width));
+        
+        // Display message buffer (newest to oldest)
+        Console.WriteLine("Messages:");
+        for (int i = 0; i < world.Messages.Count; i++)
         {
-            Console.WriteLine($"Message: {world.LastMessage}");
+            string prefix = i == 0 ? "> " : "  ";
+            Console.WriteLine(prefix + world.Messages[i]);
         }
-        else
+        
+        // Fill remaining message lines with blank space
+        for (int i = world.Messages.Count; i < 5; i++)
         {
             Console.WriteLine();
         }
         
         Console.WriteLine(new string('-', width));
-        Console.WriteLine("Commands: [↑↓←→] Move | [O] Open/Close Door | [I] Inventory | [L] Look | [S] Save | [ESC] Exit");
-        Console.WriteLine("Combat: Walk into enemies to attack | Items: Walk over items to pick up | Explore the dungeon!");
+        Console.WriteLine("Commands: [hjkl/↑↓←→] Move | [yubn] Diagonal Move | [O] Open/Close Door | [I] Inventory | [S] Save | [ESC] Exit");
+        Console.WriteLine("Combat: Walk into enemies to attack | Items: Walk over items to pick up | Doors: Press O then direction");
     }
 }
 
@@ -630,48 +680,124 @@ class Program
         
         int viewWidth = 100;
         int viewHeight = 35;
-        int uiHeight = 6;
+        int uiHeight = 12;
         
         Camera camera = new Camera(viewWidth, viewHeight);
         RoguelikeRenderer renderer = new RoguelikeRenderer(viewWidth, viewHeight, uiHeight);
         
         bool running = true;
+        bool awaitingDoorDirection = false;
         
         while (running)
         {
             Console.Clear();
             renderer.Render(world, camera);
             
+            if (awaitingDoorDirection)
+            {
+                Console.SetCursorPosition(0, viewHeight + viewHeight);
+                Console.Write("Choose direction to open/close door (hjkl/arrows or ESC to cancel): ");
+            }
+            
             if (Console.KeyAvailable)
             {
                 ConsoleKeyInfo key = Console.ReadKey(true);
                 
-                switch (key.Key)
+                if (awaitingDoorDirection)
                 {
-                    case ConsoleKey.UpArrow:
-                        world.MovePlayer(0, -1);
-                        break;
-                    case ConsoleKey.DownArrow:
-                        world.MovePlayer(0, 1);
-                        break;
-                    case ConsoleKey.LeftArrow:
-                        world.MovePlayer(-1, 0);
-                        break;
-                    case ConsoleKey.RightArrow:
-                        world.MovePlayer(1, 0);
-                        break;
-                    case ConsoleKey.S:
-                        Console.SetCursorPosition(0, viewHeight + uiHeight);
-                        Console.Write("Enter save name: ");
-                        Console.CursorVisible = true;
-                        string saveName = Console.ReadLine();
-                        Console.CursorVisible = false;
-                        world.SaveToDatabase(saveName);
-                        world.LastMessage = "Game saved successfully!";
-                        break;
-                    case ConsoleKey.Escape:
-                        running = false;
-                        break;
+                    switch (key.Key)
+                    {
+                        case ConsoleKey.H:
+                        case ConsoleKey.LeftArrow:
+                            world.ToggleDoorInDirection(-1, 0);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.J:
+                        case ConsoleKey.DownArrow:
+                            world.ToggleDoorInDirection(0, 1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.K:
+                        case ConsoleKey.UpArrow:
+                            world.ToggleDoorInDirection(0, -1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.L:
+                        case ConsoleKey.RightArrow:
+                            world.ToggleDoorInDirection(1, 0);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.Y:
+                            world.ToggleDoorInDirection(-1, -1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.U:
+                            world.ToggleDoorInDirection(1, -1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.B:
+                            world.ToggleDoorInDirection(-1, 1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.N:
+                            world.ToggleDoorInDirection(1, 1);
+                            awaitingDoorDirection = false;
+                            break;
+                        case ConsoleKey.Escape:
+                            world.AddMessage("Cancelled.");
+                            awaitingDoorDirection = false;
+                            break;
+                    }
+                }
+                else
+                {
+                    switch (key.Key)
+                    {
+                        case ConsoleKey.K:
+                        case ConsoleKey.UpArrow:
+                            world.MovePlayer(0, -1);
+                            break;
+                        case ConsoleKey.J:
+                        case ConsoleKey.DownArrow:
+                            world.MovePlayer(0, 1);
+                            break;
+                        case ConsoleKey.H:
+                        case ConsoleKey.LeftArrow:
+                            world.MovePlayer(-1, 0);
+                            break;
+                        case ConsoleKey.L:
+                        case ConsoleKey.RightArrow:
+                            world.MovePlayer(1, 0);
+                            break;
+                        case ConsoleKey.Y:
+                            world.MovePlayer(-1, -1);
+                            break;
+                        case ConsoleKey.U:
+                            world.MovePlayer(1, -1);
+                            break;
+                        case ConsoleKey.B:
+                            world.MovePlayer(-1, 1);
+                            break;
+                        case ConsoleKey.N:
+                            world.MovePlayer(1, 1);
+                            break;
+                        case ConsoleKey.O:
+                            world.AddMessage("Choose a direction to open/close a door...");
+                            awaitingDoorDirection = true;
+                            break;
+                        case ConsoleKey.S:
+                            Console.SetCursorPosition(0, viewHeight + uiHeight);
+                            Console.Write("Enter save name: ");
+                            Console.CursorVisible = true;
+                            string saveName = Console.ReadLine();
+                            Console.CursorVisible = false;
+                            world.SaveToDatabase(saveName);
+                            world.AddMessage("Game saved successfully!");
+                            break;
+                        case ConsoleKey.Escape:
+                            running = false;
+                            break;
+                    }
                 }
             }
             
