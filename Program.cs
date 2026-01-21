@@ -1,4 +1,5 @@
-﻿using System;
+﻿
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
@@ -15,19 +16,21 @@ abstract class Entity
     public char Symbol { get; set; }
     public string Name { get; set; }
     public bool BlocksMovement { get; set; }
+    public bool BlocksVision { get; set; }
     
     [ForeignKey("GameWorld")]
     public int GameWorldId { get; set; }
     
     protected Entity() { }
     
-    protected Entity(int x, int y, char symbol, string name, bool blocksMovement = false)
+    protected Entity(int x, int y, char symbol, string name, bool blocksMovement = false, bool blocksVision = false)
     {
         X = x;
         Y = y;
         Symbol = symbol;
         Name = name;
         BlocksMovement = blocksMovement;
+        BlocksVision = blocksVision;
     }
 }
 
@@ -35,24 +38,30 @@ class Player : Entity
 {
     public int Health { get; set; }
     public int MaxHealth { get; set; }
+    public int Level { get; set; }
+    public int Experience { get; set; }
     
     public Player() : base() { }
     
-    public Player(int x, int y) : base(x, y, '@', "Player", true)
+    public Player(int x, int y) : base(x, y, '@', "Player", true, false)
     {
         Health = 100;
         MaxHealth = 100;
+        Level = 1;
+        Experience = 0;
     }
 }
 
 class Enemy : Entity
 {
+    public int Health { get; set; }
     public int Damage { get; set; }
     
     public Enemy() : base() { }
     
-    public Enemy(int x, int y, string name) : base(x, y, 'E', name, true)
+    public Enemy(int x, int y, string name) : base(x, y, 'E', name, true, false)
     {
+        Health = 30;
         Damage = 10;
     }
 }
@@ -60,13 +69,49 @@ class Enemy : Entity
 class Item : Entity
 {
     public string ItemType { get; set; }
+    public int Value { get; set; }
     
     public Item() : base() { }
     
-    public Item(int x, int y, char symbol, string name, string itemType) 
-        : base(x, y, symbol, name, false)
+    public Item(int x, int y, char symbol, string name, string itemType, int value = 0) 
+        : base(x, y, symbol, name, false, false)
     {
         ItemType = itemType;
+        Value = value;
+    }
+}
+
+class Wall : Entity
+{
+    public string WallType { get; set; }
+    
+    public Wall() : base() { }
+    
+    public Wall(int x, int y, string wallType = "Stone") 
+        : base(x, y, '#', $"{wallType} Wall", true, true)
+    {
+        WallType = wallType;
+    }
+}
+
+class Door : Entity
+{
+    public bool IsOpen { get; set; }
+    
+    public Door() : base() { }
+    
+    public Door(int x, int y, bool isOpen = false) 
+        : base(x, y, isOpen ? '/' : '+', isOpen ? "Open Door" : "Closed Door", !isOpen, false)
+    {
+        IsOpen = isOpen;
+    }
+    
+    public void Toggle()
+    {
+        IsOpen = !IsOpen;
+        Symbol = IsOpen ? '/' : '+';
+        Name = IsOpen ? "Open Door" : "Closed Door";
+        BlocksMovement = !IsOpen;
     }
 }
 
@@ -125,6 +170,8 @@ class GameDbContext : DbContext
     public DbSet<Player> Players { get; set; }
     public DbSet<Enemy> Enemies { get; set; }
     public DbSet<Item> Items { get; set; }
+    public DbSet<Wall> Walls { get; set; }
+    public DbSet<Door> Doors { get; set; }
     
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
@@ -137,7 +184,9 @@ class GameDbContext : DbContext
             .HasDiscriminator<string>("EntityType")
             .HasValue<Player>("Player")
             .HasValue<Enemy>("Enemy")
-            .HasValue<Item>("Item");
+            .HasValue<Item>("Item")
+            .HasValue<Wall>("Wall")
+            .HasValue<Door>("Door");
     }
 }
 
@@ -150,6 +199,7 @@ class GameWorld
     private Tile[,] tiles;
     private List<Entity> entities;
     public Player Player { get; private set; }
+    public string LastMessage { get; set; }
     
     public GameWorld(int width, int height)
     {
@@ -157,6 +207,7 @@ class GameWorld
         Height = height;
         tiles = new Tile[height, width];
         entities = new List<Entity>();
+        LastMessage = "Welcome to the dungeon!";
         
         InitializeWorld();
     }
@@ -168,21 +219,19 @@ class GameWorld
         WorldId = data.Id;
         tiles = new Tile[data.Height, data.Width];
         entities = new List<Entity>();
+        LastMessage = "Game loaded.";
         
-        // Load tiles into array
         foreach (var tile in data.Tiles)
         {
             tiles[tile.Y, tile.X] = tile;
         }
         
-        // Load entities
         entities.AddRange(data.Entities);
         Player = entities.OfType<Player>().FirstOrDefault();
     }
     
     private void InitializeWorld()
     {
-        // Initialize all tiles as floor
         for (int y = 0; y < Height; y++)
         {
             for (int x = 0; x < Width; x++)
@@ -191,34 +240,34 @@ class GameWorld
             }
         }
         
-        // Create outer walls
-        CreateBox(0, 0, Width, Height, '#', false, "Wall");
+        CreateWallBox(0, 0, Width, Height);
         
-        // Create rooms
-        CreateBox(5, 3, 10, 6, '#', false, "Wall");
-        FillBox(6, 4, 8, 4, '.', true, "Floor");
+        CreateRoom(5, 3, 10, 6);
+        CreateRoom(20, 8, 15, 8);
+        CreateRoom(10, 12, 8, 5);
+        CreateRoom(35, 5, 12, 10);
+        CreateRoom(50, 15, 10, 8);
         
-        CreateBox(20, 8, 15, 8, '#', false, "Wall");
-        FillBox(21, 9, 13, 6, '.', true, "Floor");
+        AddDoor(14, 5);
+        AddDoor(20, 12);
+        AddDoor(35, 9);
         
-        CreateBox(10, 12, 8, 5, '#', false, "Wall");
-        FillBox(11, 13, 6, 3, '.', true, "Floor");
-        
-        // Create player
         Player = new Player(8, 5);
         entities.Add(Player);
         
-        // Create enemies
         entities.Add(new Enemy(25, 12, "Goblin"));
         entities.Add(new Enemy(28, 10, "Orc"));
+        entities.Add(new Enemy(38, 8, "Skeleton"));
+        entities.Add(new Enemy(53, 18, "Troll"));
         
-        // Create items
-        entities.Add(new Item(30, 10, 'T', "Gold Coins", "Treasure"));
-        entities.Add(new Item(13, 14, '$', "Silver Key", "Key"));
-        entities.Add(new Item(7, 5, '!', "Health Potion", "Potion"));
+        entities.Add(new Item(30, 10, 'T', "Gold Coins", "Treasure", 50));
+        entities.Add(new Item(13, 14, '$', "Silver Key", "Key", 0));
+        entities.Add(new Item(7, 5, '!', "Health Potion", "Potion", 25));
+        entities.Add(new Item(40, 7, '*', "Magic Scroll", "Scroll", 100));
+        entities.Add(new Item(55, 19, '&', "Ancient Artifact", "Artifact", 500));
     }
     
-    private void CreateBox(int x, int y, int width, int height, char symbol, bool walkable, string tileType)
+    private void CreateWallBox(int x, int y, int width, int height)
     {
         for (int dy = 0; dy < height; dy++)
         {
@@ -232,27 +281,39 @@ class GameWorld
                 
                 if (dx == 0 || dx == width - 1 || dy == 0 || dy == height - 1)
                 {
-                    tiles[py, px] = new Tile(px, py, symbol, walkable, tileType);
+                    entities.Add(new Wall(px, py));
                 }
             }
         }
     }
     
-    private void FillBox(int x, int y, int width, int height, char symbol, bool walkable, string tileType)
+    private void CreateRoom(int x, int y, int width, int height)
     {
-        for (int dy = 0; dy < height; dy++)
+        CreateWallBox(x, y, width, height);
+        
+        for (int dy = 1; dy < height - 1; dy++)
         {
-            for (int dx = 0; dx < width; dx++)
+            for (int dx = 1; dx < width - 1; dx++)
             {
                 int px = x + dx;
                 int py = y + dy;
                 
-                if (px < 0 || px >= Width || py < 0 || py >= Height)
-                    continue;
-                
-                tiles[py, px] = new Tile(px, py, symbol, walkable, tileType);
+                if (px >= 0 && px < Width && py >= 0 && py < Height)
+                {
+                    tiles[py, px] = new Tile(px, py, '.', true, "Floor");
+                }
             }
         }
+    }
+    
+    private void AddDoor(int x, int y)
+    {
+        var wall = entities.OfType<Wall>().FirstOrDefault(w => w.X == x && w.Y == y);
+        if (wall != null)
+        {
+            entities.Remove(wall);
+        }
+        entities.Add(new Door(x, y, false));
     }
     
     public Tile GetTile(int x, int y)
@@ -265,6 +326,11 @@ class GameWorld
     public IEnumerable<Entity> GetEntitiesAt(int x, int y)
     {
         return entities.Where(e => e.X == x && e.Y == y);
+    }
+    
+    public IEnumerable<Entity> GetAllEntities()
+    {
+        return entities.AsReadOnly();
     }
     
     public IEnumerable<Entity> GetEntitiesInArea(int x, int y, int width, int height)
@@ -288,10 +354,58 @@ class GameWorld
         int newX = Player.X + dx;
         int newY = Player.Y + dy;
         
+        var entitiesAtTarget = GetEntitiesAt(newX, newY).ToList();
+        
+        // Check for closed door - open it but don't move
+        var door = entitiesAtTarget.OfType<Door>().FirstOrDefault();
+        if (door != null && !door.IsOpen)
+        {
+            door.Toggle();
+            LastMessage = "You open the door.";
+            return;
+        }
+        
+        // Check for enemy - attack instead of moving
+        var enemy = entitiesAtTarget.OfType<Enemy>().FirstOrDefault();
+        if (enemy != null)
+        {
+            enemy.Health -= 20;
+            LastMessage = $"You attack the {enemy.Name}! Dealt 20 damage.";
+            if (enemy.Health <= 0)
+            {
+                entities.Remove(enemy);
+                LastMessage += $" The {enemy.Name} is defeated!";
+                Player.Experience += 10;
+            }
+            return;
+        }
+        
+        // Try to move to the new position
         if (CanMoveTo(newX, newY))
         {
             Player.X = newX;
             Player.Y = newY;
+            
+            // Pick up items after moving
+            var item = entitiesAtTarget.OfType<Item>().FirstOrDefault();
+            if (item != null)
+            {
+                entities.Remove(item);
+                LastMessage = $"You picked up {item.Name}.";
+                if (item.ItemType == "Potion")
+                {
+                    Player.Health = Math.Min(Player.Health + item.Value, Player.MaxHealth);
+                    LastMessage += $" Restored {item.Value} health!";
+                }
+            }
+            else
+            {
+                LastMessage = "";
+            }
+        }
+        else
+        {
+            LastMessage = "You cannot move there.";
         }
     }
     
@@ -305,7 +419,6 @@ class GameWorld
             
             if (WorldId > 0)
             {
-                // Update existing world
                 worldData = context.GameWorlds
                     .Include(w => w.Tiles)
                     .Include(w => w.Entities)
@@ -313,14 +426,12 @@ class GameWorld
                 
                 if (worldData != null)
                 {
-                    // Clear old data
                     context.Tiles.RemoveRange(worldData.Tiles);
                     context.Entities.RemoveRange(worldData.Entities);
                 }
             }
             else
             {
-                // Create new world
                 worldData = new GameWorldData
                 {
                     Name = worldName,
@@ -332,7 +443,6 @@ class GameWorld
             
             worldData.LastSavedAt = DateTime.Now;
             
-            // Save tiles
             for (int y = 0; y < Height; y++)
             {
                 for (int x = 0; x < Width; x++)
@@ -343,7 +453,6 @@ class GameWorld
                 }
             }
             
-            // Save entities
             foreach (var entity in entities)
             {
                 entity.GameWorldId = worldData.Id;
@@ -414,15 +523,17 @@ class RoguelikeRenderer
     private char[,] buffer;
     private int width;
     private int height;
+    private int uiHeight;
     
-    public RoguelikeRenderer(int width, int height)
+    public RoguelikeRenderer(int width, int height, int uiHeight)
     {
         this.width = width;
         this.height = height;
+        this.uiHeight = uiHeight;
         buffer = new char[height, width];
     }
     
-    public void RenderWorld(GameWorld world, Camera camera)
+    public void Render(GameWorld world, Camera camera)
     {
         camera.CenterOn(world.Player.X, world.Player.Y);
         var (topLeftX, topLeftY) = camera.GetTopLeft();
@@ -474,6 +585,32 @@ class RoguelikeRenderer
             }
             Console.WriteLine();
         }
+        
+        RenderUI(world);
+    }
+    
+    private void RenderUI(GameWorld world)
+    {
+        Console.SetCursorPosition(0, height);
+        Console.WriteLine(new string('=', width));
+        
+        string healthBar = $"Health: {world.Player.Health}/{world.Player.MaxHealth} ";
+        string levelInfo = $"Level: {world.Player.Level} XP: {world.Player.Experience} ";
+        string posInfo = $"Position: ({world.Player.X}, {world.Player.Y})";
+        Console.WriteLine(healthBar + levelInfo + posInfo);
+        
+        if (!string.IsNullOrEmpty(world.LastMessage))
+        {
+            Console.WriteLine($"Message: {world.LastMessage}");
+        }
+        else
+        {
+            Console.WriteLine();
+        }
+        
+        Console.WriteLine(new string('-', width));
+        Console.WriteLine("Commands: [↑↓←→] Move | [O] Open/Close Door | [I] Inventory | [L] Look | [S] Save | [ESC] Exit");
+        Console.WriteLine("Combat: Walk into enemies to attack | Items: Walk over items to pick up | Explore the dungeon!");
     }
 }
 
@@ -491,17 +628,19 @@ class Program
             return;
         }
         
-        Camera camera = new Camera(40, 20);
-        RoguelikeRenderer renderer = new RoguelikeRenderer(40, 20);
+        int viewWidth = 100;
+        int viewHeight = 35;
+        int uiHeight = 6;
+        
+        Camera camera = new Camera(viewWidth, viewHeight);
+        RoguelikeRenderer renderer = new RoguelikeRenderer(viewWidth, viewHeight, uiHeight);
         
         bool running = true;
         
         while (running)
         {
-            renderer.RenderWorld(world, camera);
-            
-            Console.WriteLine($"\nHealth: {world.Player.Health}/{world.Player.MaxHealth} | Position: ({world.Player.X}, {world.Player.Y})");
-            Console.WriteLine("Arrow Keys: Move | S: Save | ESC: Exit");
+            Console.Clear();
+            renderer.Render(world, camera);
             
             if (Console.KeyAvailable)
             {
@@ -522,15 +661,13 @@ class Program
                         world.MovePlayer(1, 0);
                         break;
                     case ConsoleKey.S:
-                        Console.SetCursorPosition(0, 22);
+                        Console.SetCursorPosition(0, viewHeight + uiHeight);
                         Console.Write("Enter save name: ");
                         Console.CursorVisible = true;
                         string saveName = Console.ReadLine();
                         Console.CursorVisible = false;
                         world.SaveToDatabase(saveName);
-                        Console.SetCursorPosition(0, 22);
-                        Console.WriteLine("Game saved!                    ");
-                        System.Threading.Thread.Sleep(1000);
+                        world.LastMessage = "Game saved successfully!";
                         break;
                     case ConsoleKey.Escape:
                         running = false;
@@ -551,7 +688,9 @@ class Program
         while (true)
         {
             Console.Clear();
-            Console.WriteLine("=== ROGUELIKE GAME ===\n");
+            Console.WriteLine("╔════════════════════════════════════╗");
+            Console.WriteLine("║      ROGUELIKE DUNGEON GAME        ║");
+            Console.WriteLine("╚════════════════════════════════════╝\n");
             Console.WriteLine("1. New Game");
             Console.WriteLine("2. Load Game");
             Console.WriteLine("3. Exit\n");
@@ -562,7 +701,7 @@ class Program
             switch (choice)
             {
                 case "1":
-                    return new GameWorld(80, 40);
+                    return new GameWorld(120, 60);
                     
                 case "2":
                     var saves = GameWorld.GetSavedWorlds();
@@ -574,7 +713,9 @@ class Program
                     }
                     
                     Console.Clear();
-                    Console.WriteLine("=== LOAD GAME ===\n");
+                    Console.WriteLine("╔════════════════════════════════════╗");
+                    Console.WriteLine("║          LOAD SAVED GAME           ║");
+                    Console.WriteLine("╚════════════════════════════════════╝\n");
                     for (int i = 0; i < saves.Count; i++)
                     {
                         Console.WriteLine($"{i + 1}. {saves[i].Name} (Last saved: {saves[i].LastSaved})");
