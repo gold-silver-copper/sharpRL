@@ -39,8 +39,14 @@ class Player : Entity
     public int MaxHealth { get; set; }
     public int Level { get; set; }
     public int Experience { get; set; }
+    public List<Item> Inventory { get; set; }
+    public int MaxInventorySize { get; set; }
     
-    public Player() : base() { }
+    public Player() : base() 
+    {
+        Inventory = new List<Item>();
+        MaxInventorySize = 20;
+    }
     
     public Player(int x, int y) : base(x, y, '@', "Player", true, false)
     {
@@ -48,6 +54,22 @@ class Player : Entity
         MaxHealth = 100;
         Level = 1;
         Experience = 0;
+        Inventory = new List<Item>();
+        MaxInventorySize = 20;
+    }
+    
+    public bool AddToInventory(Item item)
+    {
+        if (Inventory.Count >= MaxInventorySize)
+            return false;
+        
+        Inventory.Add(item);
+        return true;
+    }
+    
+    public bool RemoveFromInventory(Item item)
+    {
+        return Inventory.Remove(item);
     }
 }
 
@@ -437,12 +459,14 @@ class GameWorld
             var item = entitiesAtTarget.OfType<Item>().FirstOrDefault();
             if (item != null)
             {
-                entities.Remove(item);
-                AddMessage($"You picked up {item.Name}.");
-                if (item.ItemType == "Potion")
+                if (Player.AddToInventory(item))
                 {
-                    Player.Health = Math.Min(Player.Health + item.Value, Player.MaxHealth);
-                    AddMessage($"Restored {item.Value} health!");
+                    entities.Remove(item);
+                    AddMessage($"You picked up {item.Name}.");
+                }
+                else
+                {
+                    AddMessage("Your inventory is full!");
                 }
             }
         }
@@ -450,6 +474,59 @@ class GameWorld
         {
             AddMessage("You cannot move there.");
         }
+    }
+    
+    public void UseItem(int inventoryIndex)
+    {
+        if (inventoryIndex < 0 || inventoryIndex >= Player.Inventory.Count)
+            return;
+        
+        Item item = Player.Inventory[inventoryIndex];
+        
+        switch (item.ItemType)
+        {
+            case "Potion":
+                int healAmount = Math.Min(item.Value, Player.MaxHealth - Player.Health);
+                Player.Health += healAmount;
+                AddMessage($"You drink the {item.Name}. Restored {healAmount} health!");
+                Player.RemoveFromInventory(item);
+                break;
+            
+            case "Scroll":
+                AddMessage($"You read the {item.Name}. The text is arcane and mysterious...");
+                Player.Experience += item.Value / 10;
+                AddMessage($"You gained {item.Value / 10} experience!");
+                Player.RemoveFromInventory(item);
+                break;
+            
+            case "Key":
+                AddMessage($"The {item.Name} might be useful for opening locked doors.");
+                break;
+            
+            case "Treasure":
+            case "Artifact":
+                AddMessage($"The {item.Name} is valuable but has no immediate use.");
+                break;
+            
+            default:
+                AddMessage($"You can't use the {item.Name}.");
+                break;
+        }
+    }
+    
+    public void DropItem(int inventoryIndex)
+    {
+        if (inventoryIndex < 0 || inventoryIndex >= Player.Inventory.Count)
+            return;
+        
+        Item item = Player.Inventory[inventoryIndex];
+        item.X = Player.X;
+        item.Y = Player.Y;
+        
+        Player.RemoveFromInventory(item);
+        entities.Add(item);
+        
+        AddMessage($"You dropped {item.Name}.");
     }
     
     public void SaveToDatabase(string worldName)
@@ -687,117 +764,42 @@ class Program
         
         bool running = true;
         bool awaitingDoorDirection = false;
+        bool showingInventory = false;
         
         while (running)
         {
             Console.Clear();
-            renderer.Render(world, camera);
             
-            if (awaitingDoorDirection)
+            if (showingInventory)
             {
-                Console.SetCursorPosition(0, viewHeight + viewHeight);
-                Console.Write("Choose direction to open/close door (hjkl/arrows or ESC to cancel): ");
+                RenderInventory(world);
+            }
+            else
+            {
+                renderer.Render(world, camera);
+                
+                if (awaitingDoorDirection)
+                {
+                    Console.SetCursorPosition(0, viewHeight + uiHeight);
+                    Console.Write("Choose direction to open/close door (hjkl/arrows or ESC to cancel): ");
+                }
             }
             
             if (Console.KeyAvailable)
             {
                 ConsoleKeyInfo key = Console.ReadKey(true);
                 
-                if (awaitingDoorDirection)
+                if (showingInventory)
                 {
-                    switch (key.Key)
-                    {
-                        case ConsoleKey.H:
-                        case ConsoleKey.LeftArrow:
-                            world.ToggleDoorInDirection(-1, 0);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.J:
-                        case ConsoleKey.DownArrow:
-                            world.ToggleDoorInDirection(0, 1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.K:
-                        case ConsoleKey.UpArrow:
-                            world.ToggleDoorInDirection(0, -1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.L:
-                        case ConsoleKey.RightArrow:
-                            world.ToggleDoorInDirection(1, 0);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.Y:
-                            world.ToggleDoorInDirection(-1, -1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.U:
-                            world.ToggleDoorInDirection(1, -1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.B:
-                            world.ToggleDoorInDirection(-1, 1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.N:
-                            world.ToggleDoorInDirection(1, 1);
-                            awaitingDoorDirection = false;
-                            break;
-                        case ConsoleKey.Escape:
-                            world.AddMessage("Cancelled.");
-                            awaitingDoorDirection = false;
-                            break;
-                    }
+                    HandleInventoryInput(key, world, ref showingInventory);
+                }
+                else if (awaitingDoorDirection)
+                {
+                    HandleDoorDirectionInput(key, world, ref awaitingDoorDirection);
                 }
                 else
                 {
-                    switch (key.Key)
-                    {
-                        case ConsoleKey.K:
-                        case ConsoleKey.UpArrow:
-                            world.MovePlayer(0, -1);
-                            break;
-                        case ConsoleKey.J:
-                        case ConsoleKey.DownArrow:
-                            world.MovePlayer(0, 1);
-                            break;
-                        case ConsoleKey.H:
-                        case ConsoleKey.LeftArrow:
-                            world.MovePlayer(-1, 0);
-                            break;
-                        case ConsoleKey.L:
-                        case ConsoleKey.RightArrow:
-                            world.MovePlayer(1, 0);
-                            break;
-                        case ConsoleKey.Y:
-                            world.MovePlayer(-1, -1);
-                            break;
-                        case ConsoleKey.U:
-                            world.MovePlayer(1, -1);
-                            break;
-                        case ConsoleKey.B:
-                            world.MovePlayer(-1, 1);
-                            break;
-                        case ConsoleKey.N:
-                            world.MovePlayer(1, 1);
-                            break;
-                        case ConsoleKey.O:
-                            world.AddMessage("Choose a direction to open/close a door...");
-                            awaitingDoorDirection = true;
-                            break;
-                        case ConsoleKey.S:
-                            Console.SetCursorPosition(0, viewHeight + uiHeight);
-                            Console.Write("Enter save name: ");
-                            Console.CursorVisible = true;
-                            string saveName = Console.ReadLine();
-                            Console.CursorVisible = false;
-                            world.SaveToDatabase(saveName);
-                            world.AddMessage("Game saved successfully!");
-                            break;
-                        case ConsoleKey.Escape:
-                            running = false;
-                            break;
-                    }
+                    HandleGameInput(key, world, ref awaitingDoorDirection, ref showingInventory, ref running, viewHeight, uiHeight);
                 }
             }
             
@@ -807,6 +809,180 @@ class Program
         Console.Clear();
         Console.CursorVisible = true;
         Console.WriteLine("Thanks for playing!");
+    }
+    
+    static void RenderInventory(GameWorld world)
+    {
+        Console.WriteLine("╔════════════════════════════════════════════════════════════════════════════════════════════════╗");
+        Console.WriteLine("║                                         INVENTORY                                              ║");
+        Console.WriteLine("╚════════════════════════════════════════════════════════════════════════════════════════════════╝\n");
+        
+        Console.WriteLine($"Carrying: {world.Player.Inventory.Count}/{world.Player.MaxInventorySize} items\n");
+        
+        if (world.Player.Inventory.Count == 0)
+        {
+            Console.WriteLine("Your inventory is empty.\n");
+        }
+        else
+        {
+            Console.WriteLine("Items:");
+            for (int i = 0; i < world.Player.Inventory.Count; i++)
+            {
+                Item item = world.Player.Inventory[i];
+                Console.WriteLine($"  {i + 1}. [{item.Symbol}] {item.Name} ({item.ItemType})");
+            }
+            Console.WriteLine();
+        }
+        
+        Console.WriteLine(new string('─', 100));
+        Console.WriteLine("\nControls:");
+        Console.WriteLine("  [1-9] Use item by number");
+        Console.WriteLine("  [D] then [1-9] Drop item by number");
+        Console.WriteLine("  [ESC] Close inventory");
+        Console.WriteLine("\nItem Types:");
+        Console.WriteLine("  Potion - Restores health when used");
+        Console.WriteLine("  Scroll - Grants experience when read");
+        Console.WriteLine("  Key - Opens locked doors");
+        Console.WriteLine("  Treasure/Artifact - Valuable but decorative");
+    }
+    
+    static void HandleInventoryInput(ConsoleKeyInfo key, GameWorld world, ref bool showingInventory)
+    {
+        if (key.Key == ConsoleKey.Escape)
+        {
+            showingInventory = false;
+            world.AddMessage("Closed inventory.");
+            return;
+        }
+        
+        if (key.Key == ConsoleKey.D)
+        {
+            Console.WriteLine("\nPress item number to drop:");
+            ConsoleKeyInfo dropKey = Console.ReadKey(true);
+            
+            if (char.IsDigit(dropKey.KeyChar))
+            {
+                int index = int.Parse(dropKey.KeyChar.ToString()) - 1;
+                if (index >= 0 && index < world.Player.Inventory.Count)
+                {
+                    world.DropItem(index);
+                    showingInventory = false;
+                }
+            }
+            return;
+        }
+        
+        if (char.IsDigit(key.KeyChar))
+        {
+            int index = int.Parse(key.KeyChar.ToString()) - 1;
+            if (index >= 0 && index < world.Player.Inventory.Count)
+            {
+                world.UseItem(index);
+                showingInventory = false;
+            }
+        }
+    }
+    
+    static void HandleDoorDirectionInput(ConsoleKeyInfo key, GameWorld world, ref bool awaitingDoorDirection)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.H:
+            case ConsoleKey.LeftArrow:
+                world.ToggleDoorInDirection(-1, 0);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.J:
+            case ConsoleKey.DownArrow:
+                world.ToggleDoorInDirection(0, 1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.K:
+            case ConsoleKey.UpArrow:
+                world.ToggleDoorInDirection(0, -1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.L:
+            case ConsoleKey.RightArrow:
+                world.ToggleDoorInDirection(1, 0);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.Y:
+                world.ToggleDoorInDirection(-1, -1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.U:
+                world.ToggleDoorInDirection(1, -1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.B:
+                world.ToggleDoorInDirection(-1, 1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.N:
+                world.ToggleDoorInDirection(1, 1);
+                awaitingDoorDirection = false;
+                break;
+            case ConsoleKey.Escape:
+                world.AddMessage("Cancelled.");
+                awaitingDoorDirection = false;
+                break;
+        }
+    }
+    
+    static void HandleGameInput(ConsoleKeyInfo key, GameWorld world, ref bool awaitingDoorDirection, 
+                                ref bool showingInventory, ref bool running, int viewHeight, int uiHeight)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.K:
+            case ConsoleKey.UpArrow:
+                world.MovePlayer(0, -1);
+                break;
+            case ConsoleKey.J:
+            case ConsoleKey.DownArrow:
+                world.MovePlayer(0, 1);
+                break;
+            case ConsoleKey.H:
+            case ConsoleKey.LeftArrow:
+                world.MovePlayer(-1, 0);
+                break;
+            case ConsoleKey.L:
+            case ConsoleKey.RightArrow:
+                world.MovePlayer(1, 0);
+                break;
+            case ConsoleKey.Y:
+                world.MovePlayer(-1, -1);
+                break;
+            case ConsoleKey.U:
+                world.MovePlayer(1, -1);
+                break;
+            case ConsoleKey.B:
+                world.MovePlayer(-1, 1);
+                break;
+            case ConsoleKey.N:
+                world.MovePlayer(1, 1);
+                break;
+            case ConsoleKey.I:
+                showingInventory = true;
+                break;
+            case ConsoleKey.O:
+                world.AddMessage("Choose a direction to open/close a door...");
+                awaitingDoorDirection = true;
+                break;
+            case ConsoleKey.S:
+                Console.SetCursorPosition(0, viewHeight + uiHeight);
+                Console.Write("Enter save name: ");
+                Console.CursorVisible = true;
+                string saveName = Console.ReadLine();
+                Console.CursorVisible = false;
+                world.SaveToDatabase(saveName);
+                world.AddMessage("Game saved successfully!");
+                break;
+            case ConsoleKey.Escape:
+                running = false;
+                break;
+        }
     }
     
     static GameWorld ShowMainMenu()
